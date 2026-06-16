@@ -1,0 +1,32 @@
+# Auto Code – Production Environment Variables
+# Copy this file to terraform.tfvars and update values
+# IMPORTANT: Never commit terraform.tfvars to version control
+
+aws_region   = "us-east-1"
+environment  = "production"
+project_name = "autocode"
+
+# VPC
+vpc_cidr = "10.1.0.0/16"
+azs      = ["us-east-1a", "us-east-1b"]
+
+# Domain
+domain_name        = "autocode.example.com"
+create_hosted_zone = false
+
+# EC2
+key_pair_name = "autocode-prod-keypair"
+ami_id        = "" # Leave empty for latest Amazon Linux 2, or pin a specific AMI
+bastion_cidr  = null # Prefer SSM Session Manager over SSH in production
+
+# KMS
+admin_arn = "arn:aws:iam::123456789012:role/TerraformAdminRole"
+
+# Monitoring
+alarm_email = "prod-alerts@example.com"
+
+# WAF
+waf_rate_limit = 2000
+
+# CORS
+cors_allowed_origins = ["https://autocode.example.com"]

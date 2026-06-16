@@ -1,0 +1,28 @@
+# Auto Code – Dev Environment Variables
+# Copy this file to terraform.tfvars and update values
+
+aws_region   = "us-east-1"
+environment  = "dev"
+project_name = "autocode"
+
+# VPC
+vpc_cidr = "10.0.0.0/16"
+azs      = ["us-east-1a", "us-east-1b"]
+
+# Domain
+domain_name        = "autocode.example.com"
+create_hosted_zone = false
+
+# EC2
+key_pair_name = "autocode-dev-keypair"
+ami_id        = "" # Leave empty for latest Amazon Linux 2
+bastion_cidr  = "10.0.0.0/16" # Restrict to VPC CIDR or office IP
+
+# KMS
+admin_arn = "" # Leave empty to use current caller identity
+
+# Monitoring
+alarm_email = "dev-alerts@example.com"
+
+# WAF (optional for dev)
+enable_waf = false
