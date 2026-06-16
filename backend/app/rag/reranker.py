@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from sentence_transformers import CrossEncoder
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder
 
 from app.rag.retriever import RetrievalResult
 
@@ -25,6 +27,7 @@ class CrossEncoderReranker:
 
     def _get_model(self) -> CrossEncoder:
         if self._model is None:
+            from sentence_transformers import CrossEncoder
             logger.info("Loading cross-encoder model: %s", self._model_name)
             self._model = CrossEncoder(self._model_name)
         return self._model

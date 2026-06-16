@@ -15,7 +15,6 @@ from app.db.session import get_session
 from app.db.vector import qdrant_manager
 from app.rag.embeddings import EmbeddingService
 from app.rag.llm.factory import LLMFactory
-from app.rag.reranker import CrossEncoderReranker
 from app.rag.retriever import HybridRetriever
 
 
@@ -108,12 +107,13 @@ def get_retriever(
     )
 
 
-_reranker: CrossEncoderReranker | None = None
+_reranker = None
 
 
-def get_reranker() -> CrossEncoderReranker:
+def get_reranker():
     global _reranker
     if _reranker is None:
+        from app.rag.reranker import CrossEncoderReranker
         _reranker = CrossEncoderReranker()
     return _reranker
 

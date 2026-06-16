@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: autocode-postgres
+    volumes:
+      - autocode_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=autocode
+      - POSTGRES_USER=autocode
+      - POSTGRES_PASSWORD=dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autocode -d autocode"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.0
+    container_name: autocode-qdrant
+    volumes:
+      - autocode_qdrant:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  autocode_pgdata:
+  autocode_qdrant:

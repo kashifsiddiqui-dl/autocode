@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     """Central configuration — all values can be overridden by environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # ── JWT ────────────────────────────────────────────────────────────────────
     JWT_SECRET_KEY: str = "CHANGE-ME-IN-PRODUCTION"
-    JWT_ALGORITHM: str = "RS256"
+    JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
