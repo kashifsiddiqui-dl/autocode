@@ -1,0 +1,214 @@
+# =============================================================================
+# Auto Code - Continuous Deployment to Staging
+# =============================================================================
+# Triggered on push to develop branch.
+# Builds Docker images, pushes to ECR, and deploys to staging.
+# =============================================================================
+
+name: CD - Staging
+
+on:
+  push:
+    branches: [develop]
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false  # Don't cancel in-progress deployments
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  STAGING_HOST: ${{ vars.STAGING_HOST }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build and Push Docker Images to ECR
+  # ---------------------------------------------------------------------------
+  build-images:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    outputs:
+      backend-image: ${{ steps.meta-backend.outputs.image }}
+      frontend-image: ${{ steps.meta-frontend.outputs.image }}
+      image-tag: ${{ steps.vars.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: vars
+        run: |
+          TAG="staging-$(echo $GITHUB_SHA | head -c 7)-$(date +%Y%m%d%H%M%S)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Backend image
+      - name: Build and push backend image
+        id: meta-backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/backend/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/autocode-backend:${{ steps.vars.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/autocode-backend:staging-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set backend image output
+        run: echo "image=${{ env.ECR_REGISTRY }}/autocode-backend:${{ steps.vars.outputs.tag }}" >> $GITHUB_OUTPUT
+
+      # Frontend image
+      - name: Build and push frontend image
+        id: meta-frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/frontend/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/autocode-frontend:${{ steps.vars.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/autocode-frontend:staging-latest
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.STAGING_API_URL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set frontend image output
+        run: echo "image=${{ env.ECR_REGISTRY }}/autocode-frontend:${{ steps.vars.outputs.tag }}" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # Deploy to Staging
+  # ---------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-images
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.STAGING_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            set -e
+
+            cd /opt/autocode
+
+            # Pull latest compose files
+            git fetch origin develop
+            git checkout develop
+            git pull origin develop
+
+            # Login to ECR
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+            # Set the image tag
+            export IMAGE_TAG="${{ needs.build-images.outputs.image-tag }}"
+
+            # Pull new images
+            docker compose -f infra/docker/docker-compose.yml \
+                           -f infra/docker/docker-compose.prod.yml \
+                           pull
+
+            # Deploy with zero-downtime restart
+            docker compose -f infra/docker/docker-compose.yml \
+                           -f infra/docker/docker-compose.prod.yml \
+                           up -d --no-build --remove-orphans
+
+            # Run database migrations
+            docker compose -f infra/docker/docker-compose.yml \
+                           -f infra/docker/docker-compose.prod.yml \
+                           exec -T backend alembic upgrade head
+
+            # Clean up old images
+            docker image prune -f
+
+            echo "Deployment complete: $IMAGE_TAG"
+
+  # ---------------------------------------------------------------------------
+  # Smoke Test
+  # ---------------------------------------------------------------------------
+  smoke-test:
+    name: Smoke Test
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Wait for services to stabilize
+        run: sleep 30
+
+      - name: Health check - Backend API
+        run: |
+          for i in $(seq 1 10); do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              "${{ vars.STAGING_API_URL }}/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Backend health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i: got HTTP $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "Backend health check failed after 10 attempts"
+          exit 1
+
+      - name: Health check - Frontend
+        run: |
+          for i in $(seq 1 10); do
+            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+              "${{ vars.STAGING_URL }}" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Frontend health check passed (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i: got HTTP $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "Frontend health check failed after 10 attempts"
+          exit 1
+
+      - name: API smoke test
+        run: |
+          # Test the API returns a valid response
+          RESPONSE=$(curl -sf "${{ vars.STAGING_API_URL }}/health")
+          echo "Health response: $RESPONSE"
+
+          # Validate the response contains expected fields
+          echo "$RESPONSE" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert 'status' in data, 'Missing status field'
+          assert data['status'] == 'ok', f'Unexpected status: {data[\"status\"]}'
+          print('API smoke test passed')
+          "
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::warning::Staging smoke tests failed. Manual verification required."
+          echo "Staging URL: ${{ vars.STAGING_URL }}"
+          echo "API URL: ${{ vars.STAGING_API_URL }}"

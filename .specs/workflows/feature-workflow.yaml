@@ -1,0 +1,183 @@
+# Feature Workflow
+# Defines the lifecycle stages, gates, artifacts, and roles for a feature.
+
+name: feature-workflow
+version: "1.0"
+description: >
+  End-to-end workflow for specifying, designing, implementing, and validating a feature.
+  Features are the primary unit of deliverable work.
+
+roles:
+  - name: feature-owner
+    description: Responsible for the feature's specification and delivery
+    permissions: [create, update, submit-for-review, close]
+  - name: tech-lead
+    description: Reviews design and implementation quality
+    permissions: [review, approve-design, approve-implementation]
+  - name: implementer
+    description: Writes the code for the feature
+    permissions: [update-tasks, submit-for-review]
+  - name: reviewer
+    description: Reviews code and validates acceptance criteria
+    permissions: [review, approve-acceptance]
+
+stages:
+  - id: specification
+    name: Specification
+    description: Define what the feature does, why, and how it will be validated
+    entry_criteria: []
+    artifacts:
+      - name: spec.md
+        template: templates/spec-template.md
+        required: true
+        description: >
+          Feature specification with summary, problem statement, functional requirements,
+          non-functional requirements, acceptance criteria, and test plan
+    exit_gate:
+      name: spec-review
+      approvers: [feature-owner, tech-lead]
+      criteria:
+        - Problem statement is clear
+        - Functional requirements are complete and unambiguous
+        - Acceptance criteria are testable
+        - Dependencies identified
+        - Effort estimated
+
+  - id: design
+    name: Design
+    description: >
+      Create detailed technical design. May be skipped for small/straightforward features
+      where the spec provides sufficient technical guidance.
+    entry_criteria:
+      - spec-review gate passed
+    skippable: true
+    skip_criteria:
+      - Feature is small (estimated < 2 days effort)
+      - Technical approach is straightforward and well-understood
+      - No new architectural patterns or infrastructure introduced
+    artifacts:
+      - name: design.md
+        template: templates/design-template.md
+        required: true
+        description: >
+          Detailed technical design including architecture, component design,
+          data model, API design, and alternatives considered
+    exit_gate:
+      name: design-review
+      approvers: [tech-lead]
+      criteria:
+        - Architecture is sound and consistent with system design
+        - Data model changes are backward-compatible or migration planned
+        - Performance implications analyzed
+        - Security considerations addressed
+        - Alternatives documented with rationale for chosen approach
+
+  - id: task-breakdown
+    name: Task Breakdown
+    description: Decompose the feature into implementable tasks
+    entry_criteria:
+      - spec-review gate passed
+      - design-review gate passed (if design stage was not skipped)
+    artifacts:
+      - name: tasks.md
+        template: templates/tasks-template.md
+        required: true
+        description: >
+          Ordered list of tasks with effort estimates, dependencies,
+          and acceptance criteria for each task
+    exit_gate:
+      name: tasks-review
+      approvers: [feature-owner]
+      criteria:
+        - All spec requirements mapped to at least one task
+        - Task dependencies are clear
+        - Effort estimates are reasonable
+        - No task is larger than 1 day of work
+
+  - id: implementation
+    name: Implementation
+    description: Code the feature according to spec, design, and task breakdown
+    entry_criteria:
+      - tasks-review gate passed
+      - Feature dependencies are met (upstream features completed)
+    artifacts:
+      - name: source code
+        required: true
+        description: Implementation code in the appropriate project directories
+      - name: tests
+        required: true
+        description: Unit and integration tests per the test plan in spec.md
+    activities:
+      - name: task-progress
+        frequency: per-task
+        responsible: implementer
+        description: Update tasks.md status as tasks are completed
+      - name: incremental-commits
+        frequency: continuous
+        responsible: implementer
+        description: Commit working code incrementally with descriptive messages
+    exit_gate:
+      name: implementation-review
+      approvers: [tech-lead, reviewer]
+      criteria:
+        - All tasks completed
+        - All tests passing
+        - Code follows project conventions and style guidelines
+        - No security vulnerabilities introduced
+        - No performance regressions
+
+  - id: acceptance
+    name: Acceptance
+    description: Validate the feature against acceptance criteria from the spec
+    entry_criteria:
+      - implementation-review gate passed
+    artifacts:
+      - name: acceptance.md
+        template: templates/acceptance-template.md
+        required: true
+        description: >
+          Acceptance test results documenting each criterion's pass/fail status,
+          edge cases tested, and any issues found
+    exit_gate:
+      name: acceptance-review
+      approvers: [feature-owner, reviewer]
+      criteria:
+        - All acceptance criteria from spec.md verified and passing
+        - Edge cases tested
+        - Non-functional requirements validated (performance, security, accessibility)
+        - No critical or major issues open
+
+  - id: done
+    name: Done
+    description: Feature is complete and accepted
+    entry_criteria:
+      - acceptance-review gate passed
+    artifacts: []
+
+transitions:
+  - from: specification
+    to: design
+    trigger: spec-review gate passed
+  - from: specification
+    to: task-breakdown
+    trigger: spec-review gate passed AND design stage skipped
+  - from: design
+    to: task-breakdown
+    trigger: design-review gate passed
+  - from: task-breakdown
+    to: implementation
+    trigger: tasks-review gate passed AND dependencies met
+  - from: implementation
+    to: acceptance
+    trigger: implementation-review gate passed
+  - from: acceptance
+    to: done
+    trigger: acceptance-review gate passed
+  - from: acceptance
+    to: implementation
+    trigger: acceptance-review gate failed (issues found requiring code changes)
+    description: Return to implementation to fix issues found during acceptance
+  - from: any
+    to: specification
+    trigger: manual (feature-owner)
+    description: Reset to specification if requirements change fundamentally

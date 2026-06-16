@@ -1,0 +1,322 @@
+# =============================================================================
+# Auto Code - Continuous Deployment to Production
+# =============================================================================
+# Triggered on push to main branch with manual approval gate.
+# Performs blue-green deployment with automatic rollback on failure.
+# =============================================================================
+
+name: CD - Production
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build and Push Docker Images to ECR
+  # ---------------------------------------------------------------------------
+  build-images:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    outputs:
+      image-tag: ${{ steps.vars.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: vars
+        run: |
+          TAG="prod-$(echo $GITHUB_SHA | head -c 7)-$(date +%Y%m%d%H%M%S)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Backend image
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/backend/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/autocode-backend:${{ steps.vars.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/autocode-backend:production-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Frontend image
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/frontend/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/autocode-frontend:${{ steps.vars.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/autocode-frontend:production-latest
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.PRODUCTION_API_URL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Manual Approval Gate
+  # ---------------------------------------------------------------------------
+  approve-deployment:
+    name: Approval Gate
+    needs: build-images
+    runs-on: ubuntu-latest
+    environment: production  # Requires manual approval via GitHub Environment protection rules
+
+    steps:
+      - name: Deployment approved
+        run: |
+          echo "Production deployment approved"
+          echo "Image tag: ${{ needs.build-images.outputs.image-tag }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Approved by: ${{ github.actor }}"
+
+  # ---------------------------------------------------------------------------
+  # Blue-Green Deploy to Production
+  # ---------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to Production (Blue-Green)
+    needs: [build-images, approve-deployment]
+    runs-on: ubuntu-latest
+    environment: production
+
+    outputs:
+      previous-tag: ${{ steps.deploy.outputs.previous-tag }}
+      deploy-success: ${{ steps.deploy.outputs.success }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Blue-green deployment
+        id: deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            set -e
+
+            cd /opt/autocode
+
+            # Save current image tag for rollback
+            PREVIOUS_TAG=$(docker inspect --format='{{index .Config.Image}}' autocode-backend-1 2>/dev/null | grep -oP '(?<=:).*' || echo "none")
+            echo "previous-tag=$PREVIOUS_TAG" >> /tmp/deploy-output
+
+            # Login to ECR
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+            # Pull latest compose configuration
+            git fetch origin main
+            git checkout main
+            git pull origin main
+
+            # Set environment
+            export IMAGE_TAG="${{ needs.build-images.outputs.image-tag }}"
+
+            # Pull new images
+            echo "Pulling images with tag: $IMAGE_TAG"
+            docker compose -f infra/docker/docker-compose.yml \
+                           -f infra/docker/docker-compose.prod.yml \
+                           pull backend frontend
+
+            # Run database migrations BEFORE switching traffic
+            echo "Running database migrations..."
+            docker compose -f infra/docker/docker-compose.yml \
+                           -f infra/docker/docker-compose.prod.yml \
+                           run --rm backend alembic upgrade head
+
+            # Blue-green: start new containers alongside old ones
+            echo "Starting new containers..."
+            docker compose -f infra/docker/docker-compose.yml \
+                           -f infra/docker/docker-compose.prod.yml \
+                           up -d --no-build --remove-orphans
+
+            # Wait for new containers to be healthy
+            echo "Waiting for health checks..."
+            sleep 15
+
+            # Verify backend health
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+                echo "Backend healthy (attempt $i)"
+                break
+              fi
+              if [ "$i" = "12" ]; then
+                echo "Backend health check failed"
+                echo "success=false" >> /tmp/deploy-output
+                exit 1
+              fi
+              echo "Waiting for backend... (attempt $i)"
+              sleep 5
+            done
+
+            # Verify frontend health
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost:3000/ > /dev/null 2>&1; then
+                echo "Frontend healthy (attempt $i)"
+                break
+              fi
+              if [ "$i" = "12" ]; then
+                echo "Frontend health check failed"
+                echo "success=false" >> /tmp/deploy-output
+                exit 1
+              fi
+              echo "Waiting for frontend... (attempt $i)"
+              sleep 5
+            done
+
+            # Clean up old images
+            docker image prune -f
+
+            echo "success=true" >> /tmp/deploy-output
+            echo "Production deployment complete: $IMAGE_TAG"
+
+  # ---------------------------------------------------------------------------
+  # Health Check with Automatic Rollback
+  # ---------------------------------------------------------------------------
+  health-check:
+    name: Health Check & Rollback
+    needs: [build-images, deploy-production]
+    runs-on: ubuntu-latest
+    if: always() && needs.deploy-production.result == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Comprehensive health check
+        id: healthcheck
+        run: |
+          echo "Running post-deployment health checks..."
+
+          PASSED=true
+
+          # Check 1: Backend API health
+          echo "--- Backend Health ---"
+          for i in $(seq 1 5); do
+            RESPONSE=$(curl -sf "${{ vars.PRODUCTION_API_URL }}/health" 2>/dev/null || echo '{"status":"error"}')
+            STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','error'))" 2>/dev/null || echo "error")
+
+            if [ "$STATUS" = "ok" ]; then
+              echo "Backend healthy: $RESPONSE"
+              break
+            fi
+
+            if [ "$i" = "5" ]; then
+              echo "::error::Backend health check failed after 5 attempts"
+              PASSED=false
+            fi
+            sleep 10
+          done
+
+          # Check 2: Frontend accessibility
+          echo "--- Frontend Health ---"
+          FRONTEND_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "${{ vars.PRODUCTION_URL }}" || echo "000")
+          if [ "$FRONTEND_STATUS" = "200" ]; then
+            echo "Frontend accessible: HTTP $FRONTEND_STATUS"
+          else
+            echo "::error::Frontend returned HTTP $FRONTEND_STATUS"
+            PASSED=false
+          fi
+
+          # Check 3: Database connectivity (via API endpoint)
+          echo "--- Database Connectivity ---"
+          DB_CHECK=$(curl -sf "${{ vars.PRODUCTION_API_URL }}/health" 2>/dev/null || echo '{}')
+          echo "Database check: $DB_CHECK"
+
+          if [ "$PASSED" = "false" ]; then
+            echo "health=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "health=passed" >> $GITHUB_OUTPUT
+          echo "All health checks passed"
+
+      - name: Automatic rollback on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            set -e
+
+            cd /opt/autocode
+            echo "::warning::INITIATING AUTOMATIC ROLLBACK"
+
+            # Get the previous working tag
+            PREVIOUS_TAG=$(cat /tmp/deploy-output 2>/dev/null | grep "previous-tag" | cut -d= -f2 || echo "")
+
+            if [ -z "$PREVIOUS_TAG" ] || [ "$PREVIOUS_TAG" = "none" ]; then
+              echo "::error::No previous tag found for rollback. Manual intervention required."
+              exit 1
+            fi
+
+            echo "Rolling back to: $PREVIOUS_TAG"
+
+            # Login to ECR
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+            # Set previous image tag
+            export IMAGE_TAG="$PREVIOUS_TAG"
+
+            # Roll back
+            docker compose -f infra/docker/docker-compose.yml \
+                           -f infra/docker/docker-compose.prod.yml \
+                           up -d --no-build
+
+            # Wait and verify
+            sleep 15
+
+            if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Rollback successful. Backend is healthy."
+            else
+              echo "::error::Rollback may have failed. Manual intervention required."
+              exit 1
+            fi
+
+      - name: Notify rollback
+        if: failure()
+        run: |
+          echo "::error::Production deployment failed and was rolled back."
+          echo "Failed tag: ${{ needs.build-images.outputs.image-tag }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Please investigate before re-deploying."

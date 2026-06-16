@@ -1,0 +1,159 @@
+{
+  "name": "ICD-10-CM",
+  "display_name": "International Classification of Diseases, 10th Revision, Clinical Modification",
+  "version": "2026",
+  "effective_date": "2026-04-01",
+  "publisher": "Centers for Medicare & Medicaid Services (CMS)",
+  "maintainer": "National Center for Health Statistics (NCHS)",
+  "country": "US",
+  "purpose": "Diagnosis coding for outpatient and inpatient encounters",
+  "source_files": [
+    {
+      "filename": "icd10c-tabular-April-1-2026.xml",
+      "type": "tabular",
+      "description": "Full tabular list with code hierarchy, descriptions, includes, excludes, and annotations",
+      "path": "data/ICD-10-CM/icd10cm-April-1-2026-XML/icd10c-tabular-April-1-2026.xml",
+      "format": "xml",
+      "schema": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-tabular-April1-1-2026.xsd"
+    },
+    {
+      "filename": "icd10cm-index-April-1-2026-XML.xml",
+      "type": "index",
+      "description": "Alphabetical index of diseases and conditions with code references",
+      "path": "data/ICD-10-CM/icd10cm-April-1-2026-XML/icd10cm-index-April-1-2026-XML.xml",
+      "format": "xml",
+      "schema": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-index-April-1-2026.xsd"
+    },
+    {
+      "filename": "icd10cm-drug-April-1-2026-XML.xml",
+      "type": "drug",
+      "description": "Table of drugs and chemicals with poisoning, adverse effect, and underdosing codes",
+      "path": "data/ICD-10-CM/icd10cm-April-1-2026-XML/icd10cm-drug-April-1-2026-XML.xml",
+      "format": "xml",
+      "schema": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-drug-neoplasm-April1-2026.xsd"
+    },
+    {
+      "filename": "icd10cm-neoplasm-April-1-2026-XML.xml",
+      "type": "neoplasm",
+      "description": "Neoplasm table with codes by site and behavior (malignant, benign, in situ, uncertain, unspecified)",
+      "path": "data/ICD-10-CM/icd10cm-April-1-2026-XML/icd10cm-neoplasm-April-1-2026-XML.xml",
+      "format": "xml",
+      "schema": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-drug-neoplasm-April1-2026.xsd"
+    },
+    {
+      "filename": "icd10cm-eindex-April-1-2026-XML.xml",
+      "type": "eindex",
+      "description": "External causes of morbidity index",
+      "path": "data/ICD-10-CM/icd10cm-April-1-2026-XML/icd10cm-eindex-April-1-2026-XML.xml",
+      "format": "xml",
+      "schema": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-index-April-1-2026.xsd"
+    }
+  ],
+  "supplementary_files": [
+    {
+      "filename": "icd10cm-codes-April-1-2026.txt",
+      "type": "codes_list",
+      "description": "Flat list of all valid ICD-10-CM codes",
+      "path": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-codes-April-1-2026.txt"
+    },
+    {
+      "filename": "icd10cm-order-April-1-2026.txt",
+      "type": "order_file",
+      "description": "Ordered list of codes with short and long descriptions",
+      "path": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-order-April-1-2026.txt"
+    },
+    {
+      "filename": "icd10cm-codes-addenda-April-1-2026.txt",
+      "type": "addenda",
+      "description": "Changes from previous version (additions, deletions, revisions)",
+      "path": "data/ICD-10-CM/icd10cm-table-and-index-April-1-2026/icd10cm-codes-addenda-April-1-2026.txt"
+    },
+    {
+      "filename": "ICD-10-CM April 1 2026 Guidelines Final.pdf",
+      "type": "guidelines",
+      "description": "Official ICD-10-CM coding guidelines",
+      "path": "data/ICD-10-CM/ICD-10-CM April 1 2026 Guidelines Final.pdf"
+    }
+  ],
+  "structure": {
+    "hierarchy_levels": [
+      "chapter",
+      "section",
+      "category",
+      "subcategory",
+      "code"
+    ],
+    "chapters": 22,
+    "code_format": {
+      "pattern": "^[A-Z][0-9]{2}(\\.[0-9A-Z]{1,4})?$",
+      "description": "Letter + 2 digits, optionally followed by decimal point and 1-4 alphanumeric characters",
+      "examples": ["A01", "A01.0", "A01.00", "S72.001A"]
+    },
+    "seventh_character": {
+      "applicable_chapters": [7, 13, 15, 19, 20],
+      "description": "7th character extension required for certain codes to indicate encounter type, laterality, etc.",
+      "common_values": {
+        "A": "Initial encounter",
+        "D": "Subsequent encounter",
+        "S": "Sequela"
+      }
+    }
+  },
+  "statistics": {
+    "total_codes": 98186,
+    "billable_codes": "~72000",
+    "non_billable_codes": "~26000",
+    "chapters": 22,
+    "note": "Exact counts to be confirmed after ingestion"
+  },
+  "chunk_types": [
+    {
+      "type": "tabular",
+      "description": "Code entries from the tabular list with full hierarchy and annotations",
+      "estimated_count": 98186,
+      "content_template": "{code} - {description}. {long_description}. Chapter: {chapter_desc}. Section: {section_desc}. {includes}. {excludes1}. {excludes2}."
+    },
+    {
+      "type": "index",
+      "description": "Alphabetical index entries with main terms, subterms, and code references",
+      "estimated_count": 30000,
+      "content_template": "Index entry: {term}. Main term: {main_term}. See: {see_ref}. Codes: {codes}."
+    },
+    {
+      "type": "drug",
+      "description": "Drug and chemical substance entries with poisoning and adverse effect codes",
+      "estimated_count": 1500,
+      "content_template": "Drug/substance: {name}. Poisoning accidental: {code}. Intentional: {code}. Adverse effect: {code}. Underdosing: {code}."
+    },
+    {
+      "type": "neoplasm",
+      "description": "Neoplasm table entries with codes by site and behavior type",
+      "estimated_count": 2000,
+      "content_template": "Neoplasm: {site}. Malignant primary: {code}. Secondary: {code}. In situ: {code}. Benign: {code}."
+    },
+    {
+      "type": "eindex",
+      "description": "External causes of morbidity index entries",
+      "estimated_count": 5000,
+      "content_template": "External cause: {term}. {sub_terms}. Codes: {codes}."
+    }
+  ],
+  "embedding": {
+    "model": "text-embedding-3-small",
+    "dimensions": 1536,
+    "provider": "openai",
+    "max_chunk_tokens": 2048,
+    "estimated_total_chunks": 136686
+  },
+  "qdrant": {
+    "collection_name": "icd10cm_chunks",
+    "distance_metric": "cosine",
+    "payload_indexes": [
+      "chunk_type",
+      "chapter",
+      "is_billable",
+      "standard_id",
+      "code"
+    ]
+  }
+}

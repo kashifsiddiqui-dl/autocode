@@ -1,0 +1,163 @@
+# Initiative Workflow
+# Defines the lifecycle stages, gates, artifacts, and roles for an initiative.
+
+name: initiative-workflow
+version: "1.0"
+description: >
+  End-to-end workflow for planning, executing, and completing an initiative.
+  An initiative is a large body of work containing multiple releases and features.
+
+roles:
+  - name: initiative-owner
+    description: Responsible for the initiative's success and overall coordination
+    permissions: [create, update, approve-gates, close]
+  - name: tech-lead
+    description: Responsible for technical architecture and design decisions
+    permissions: [update, review, approve-design]
+  - name: contributor
+    description: Implements features within the initiative
+    permissions: [update-features, submit-for-review]
+  - name: stakeholder
+    description: Reviews progress and provides business input
+    permissions: [view, comment, approve-gates]
+
+stages:
+  - id: proposal
+    name: Proposal
+    description: Initial idea and high-level scoping
+    entry_criteria: []
+    artifacts:
+      - name: initiative.md
+        template: templates/initiative-template.md
+        required: true
+        description: SHAPE framework document with situation, hypothesis, actions, plan, evidence
+    exit_gate:
+      name: proposal-review
+      approvers: [initiative-owner, stakeholder]
+      criteria:
+        - SHAPE framework fully populated
+        - Problem statement is clear and validated
+        - Hypothesis is testable with defined evidence metrics
+        - High-level plan with estimated timeline exists
+
+  - id: planning
+    name: Planning
+    description: Detailed planning, architecture, and feature decomposition
+    entry_criteria:
+      - proposal-review gate passed
+    artifacts:
+      - name: journey-map.md
+        required: true
+        description: User journey mapping for primary personas
+      - name: architecture/runway.md
+        template: null
+        required: true
+        description: Foundation architecture and infrastructure requirements
+      - name: dependency-graph.md
+        required: true
+        description: Cross-feature dependency mapping
+      - name: parallel-tracks.md
+        required: false
+        description: Team/agent assignment and parallel execution plan
+      - name: releases/*/release.md
+        template: templates/release-template.md
+        required: true
+        description: Release definitions with scope and success criteria
+      - name: releases/*/features/*/spec.md
+        template: templates/spec-template.md
+        required: true
+        description: Feature specifications for all in-scope features
+    exit_gate:
+      name: planning-review
+      approvers: [initiative-owner, tech-lead]
+      criteria:
+        - All releases defined with clear scope
+        - All features specified with acceptance criteria
+        - Dependency graph reviewed and validated
+        - Architecture runway documented
+        - Effort estimates provided for all features
+
+  - id: execution
+    name: Execution
+    description: Active development across releases
+    entry_criteria:
+      - planning-review gate passed
+      - Architecture runway work completed
+    artifacts:
+      - name: progress.md
+        required: true
+        description: Updated weekly with feature status and metrics
+      - name: releases/*/features/*/tasks.md
+        template: templates/tasks-template.md
+        required: false
+        description: Task breakdowns for features in active development
+      - name: releases/*/features/*/design.md
+        template: templates/design-template.md
+        required: false
+        description: Detailed design documents (when needed)
+    activities:
+      - name: weekly-progress-update
+        frequency: weekly
+        responsible: initiative-owner
+        description: Update progress.md with current status, metrics, and blockers
+      - name: release-gate-review
+        frequency: per-release
+        responsible: initiative-owner
+        description: Review release completion criteria before marking release as done
+    exit_gate:
+      name: execution-complete
+      approvers: [initiative-owner, tech-lead]
+      criteria:
+        - All planned releases completed
+        - All feature acceptance criteria verified
+        - Integration testing passed
+        - Performance benchmarks met
+
+  - id: validation
+    name: Validation
+    description: Validate the initiative hypothesis against evidence metrics
+    entry_criteria:
+      - execution-complete gate passed
+    artifacts:
+      - name: validation-report.md
+        required: true
+        description: Evidence metrics measured against targets from SHAPE framework
+    activities:
+      - name: measure-evidence
+        responsible: initiative-owner
+        description: Collect and report on all evidence metrics defined in SHAPE
+      - name: hypothesis-review
+        responsible: [initiative-owner, stakeholder]
+        description: Evaluate whether the hypothesis was validated
+    exit_gate:
+      name: validation-review
+      approvers: [initiative-owner, stakeholder]
+      criteria:
+        - All evidence metrics measured and documented
+        - Hypothesis verdict documented (validated / partially validated / invalidated)
+        - Learnings captured
+
+  - id: closed
+    name: Closed
+    description: Initiative is complete
+    entry_criteria:
+      - validation-review gate passed
+    artifacts: []
+
+transitions:
+  - from: proposal
+    to: planning
+    trigger: proposal-review gate passed
+  - from: planning
+    to: execution
+    trigger: planning-review gate passed
+  - from: execution
+    to: validation
+    trigger: execution-complete gate passed
+  - from: validation
+    to: closed
+    trigger: validation-review gate passed
+  - from: any
+    to: proposal
+    trigger: manual (initiative-owner)
+    description: Reset to proposal stage if scope changes fundamentally

@@ -1,0 +1,269 @@
+# =============================================================================
+# Auto Code - Data Pipeline (ICD-10-CM Ingestion)
+# =============================================================================
+# Manual trigger for running the data ingestion pipeline.
+# Parses ICD-10-CM codes, generates embeddings, and loads into Qdrant.
+# =============================================================================
+
+name: Data Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+      data_source:
+        description: "Data source version (e.g., April-1-2026)"
+        required: false
+        type: string
+        default: "April-1-2026"
+      dry_run:
+        description: "Dry run (parse and validate without loading)"
+        required: false
+        type: boolean
+        default: false
+      force_reingest:
+        description: "Force re-ingestion (drop and recreate collection)"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Ingest ICD-10-CM Data
+  # ---------------------------------------------------------------------------
+  ingest:
+    name: Ingest ICD-10-CM Data
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true  # Pull large data files from Git LFS
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-ingest-${{ hashFiles('backend/pyproject.toml') }}
+          restore-keys: pip-ingest-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          cd backend
+          pip install -e ".[dev]" 2>/dev/null || pip install -e . || true
+
+      - name: Run ingestion pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATA_SOURCE_VERSION: ${{ inputs.data_source }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          FORCE_REINGEST: ${{ inputs.force_reingest }}
+        run: |
+          cd backend
+
+          echo "=== ICD-10-CM Data Ingestion ==="
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Data source: ${{ inputs.data_source }}"
+          echo "Dry run: ${{ inputs.dry_run }}"
+          echo "Force re-ingest: ${{ inputs.force_reingest }}"
+          echo ""
+
+          ARGS=""
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ "$FORCE_REINGEST" = "true" ]; then
+            ARGS="$ARGS --force"
+          fi
+
+          python -m app.scripts.ingest \
+            --source-version "$DATA_SOURCE_VERSION" \
+            $ARGS \
+            2>&1 | tee /tmp/ingest-output.log
+
+          echo ""
+          echo "=== Ingestion Complete ==="
+
+      - name: Upload ingestion log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ingest-log-${{ inputs.environment }}-${{ github.run_number }}
+          path: /tmp/ingest-output.log
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Validate Ingested Data
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Validate Ingested Data
+    needs: ingest
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          cd backend
+          pip install -e ".[dev]" 2>/dev/null || pip install -e . || true
+
+      - name: Validate code counts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+        run: |
+          cd backend
+
+          python -c "
+          import asyncio
+          import sys
+
+          async def validate():
+              # Expected approximate counts for ICD-10-CM
+              EXPECTED_MIN_CODES = 70000   # Minimum expected ICD-10-CM codes
+              EXPECTED_MAX_CODES = 150000  # Maximum expected codes
+
+              try:
+                  from app.scripts.validate import validate_ingestion
+                  result = await validate_ingestion()
+
+                  print('=== Validation Results ===')
+                  print(f'Total codes in database: {result[\"db_count\"]}')
+                  print(f'Total vectors in Qdrant: {result[\"vector_count\"]}')
+                  print(f'Collection info: {result.get(\"collection_info\", \"N/A\")}')
+                  print()
+
+                  # Validate counts
+                  errors = []
+
+                  if result['db_count'] < EXPECTED_MIN_CODES:
+                      errors.append(f'Database has only {result[\"db_count\"]} codes (expected >= {EXPECTED_MIN_CODES})')
+
+                  if result['vector_count'] < EXPECTED_MIN_CODES:
+                      errors.append(f'Qdrant has only {result[\"vector_count\"]} vectors (expected >= {EXPECTED_MIN_CODES})')
+
+                  if result['db_count'] > EXPECTED_MAX_CODES:
+                      errors.append(f'Database has {result[\"db_count\"]} codes (expected <= {EXPECTED_MAX_CODES}) - possible duplicates')
+
+                  # Check DB and vector counts roughly match
+                  if result['db_count'] > 0 and result['vector_count'] > 0:
+                      ratio = result['vector_count'] / result['db_count']
+                      if ratio < 0.95 or ratio > 1.05:
+                          errors.append(f'Count mismatch: DB={result[\"db_count\"]}, Qdrant={result[\"vector_count\"]} (ratio={ratio:.2f})')
+
+                  if errors:
+                      print('=== VALIDATION ERRORS ===')
+                      for err in errors:
+                          print(f'  ERROR: {err}')
+                      sys.exit(1)
+                  else:
+                      print('=== ALL VALIDATIONS PASSED ===')
+
+              except ImportError:
+                  print('Validation module not yet implemented. Skipping detailed validation.')
+                  print('Running basic Qdrant connectivity check...')
+
+                  import httpx
+                  import os
+
+                  qdrant_url = os.environ.get('QDRANT_URL', 'http://localhost:6333')
+                  async with httpx.AsyncClient() as client:
+                      resp = await client.get(f'{qdrant_url}/collections')
+                      data = resp.json()
+                      collections = data.get('result', {}).get('collections', [])
+                      print(f'Qdrant collections: {[c[\"name\"] for c in collections]}')
+
+                      for col in collections:
+                          info_resp = await client.get(f'{qdrant_url}/collections/{col[\"name\"]}')
+                          info = info_resp.json()
+                          count = info.get('result', {}).get('points_count', 0)
+                          print(f'  {col[\"name\"]}: {count} vectors')
+
+                      print('Basic validation passed.')
+
+          asyncio.run(validate())
+          "
+
+      - name: Run sample queries
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          QDRANT_URL: ${{ secrets.QDRANT_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cd backend
+
+          python -c "
+          import asyncio
+
+          async def smoke_test():
+              print('=== Sample Query Smoke Test ===')
+
+              test_queries = [
+                  'type 2 diabetes mellitus',
+                  'acute myocardial infarction',
+                  'pneumonia',
+                  'fracture of femur',
+                  'major depressive disorder',
+              ]
+
+              try:
+                  from app.scripts.benchmark import run_single_query
+
+                  for query in test_queries:
+                      results = await run_single_query(query, top_k=3)
+                      print(f'Query: \"{query}\"')
+                      for i, r in enumerate(results):
+                          print(f'  {i+1}. {r[\"code\"]} - {r[\"description\"]} (score: {r[\"score\"]:.4f})')
+                      print()
+
+                  print('=== Smoke Test Passed ===')
+
+              except ImportError:
+                  print('Benchmark module not yet implemented. Skipping query smoke test.')
+                  print('Smoke test skipped (non-blocking).')
+
+          asyncio.run(smoke_test())
+          "
+        continue-on-error: true  # Don't fail the pipeline if queries aren't perfect

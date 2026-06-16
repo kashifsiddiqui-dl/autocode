@@ -1,0 +1,208 @@
+# Spike Workflow
+# Defines the lifecycle for time-boxed research and prototyping activities.
+
+name: spike-workflow
+version: "1.0"
+description: >
+  Workflow for time-boxed research spikes. A spike investigates a technical question,
+  evaluates feasibility, or prototypes an approach. Spikes produce knowledge (not
+  production code) and result in a recommendation that informs feature design.
+
+roles:
+  - name: spike-owner
+    description: Defines the spike question and reviews findings
+    permissions: [create, update, approve]
+  - name: researcher
+    description: Conducts the investigation and produces findings
+    permissions: [update, submit-findings]
+  - name: tech-lead
+    description: Reviews findings and approves recommendations
+    permissions: [review, approve]
+
+stages:
+  - id: definition
+    name: Definition
+    description: Define the question, scope, and time box for the spike
+    entry_criteria: []
+    artifacts:
+      - name: spike-definition
+        required: true
+        fields:
+          - name: title
+            required: true
+            description: "Descriptive title for the spike"
+          - name: question
+            required: true
+            description: >
+              The specific question this spike answers.
+              Must be answerable with a yes/no or a concrete recommendation.
+              Example: "Can Qdrant handle 130K vectors with sub-200ms p95 query latency?"
+          - name: context
+            required: true
+            description: "Why this question needs answering. What decision depends on it?"
+          - name: related_feature
+            required: false
+            description: "FEAT-NNN this spike informs"
+          - name: time_box
+            required: true
+            description: >
+              Maximum time allocated for this spike.
+              Typical: 2-4 hours for small, 1-2 days for medium, 1 week for large.
+          - name: success_criteria
+            required: true
+            description: "What constitutes a sufficient answer? What evidence is needed?"
+          - name: approach
+            required: true
+            description: "Planned approach: what will be tried, in what order"
+    exit_gate:
+      name: definition-review
+      approvers: [spike-owner]
+      criteria:
+        - Question is specific and answerable
+        - Time box is appropriate for the question scope
+        - Success criteria are clear
+        - Approach is reasonable
+
+  - id: investigation
+    name: Investigation
+    description: Conduct the research, prototyping, or benchmarking
+    entry_criteria:
+      - definition-review gate passed
+    artifacts:
+      - name: investigation-log
+        required: true
+        description: >
+          Running log of what was tried, what was learned, and what was ruled out.
+          Updated as the investigation progresses.
+        fields:
+          - name: entries
+            description: "Timestamped entries documenting each step"
+      - name: prototype-code
+        required: false
+        description: >
+          Throwaway prototype code created during the spike.
+          Stored in a spike branch, NOT merged to main.
+      - name: benchmark-data
+        required: false
+        description: "Raw benchmark results if the spike involves performance testing"
+    activities:
+      - name: time-box-check
+        frequency: at_50_percent
+        responsible: researcher
+        description: >
+          At the halfway point of the time box, assess progress.
+          If the question cannot be answered in the remaining time,
+          narrow the scope or escalate.
+      - name: daily-update
+        frequency: daily
+        responsible: researcher
+        description: Update the investigation log with findings (for multi-day spikes)
+    exit_gate:
+      name: investigation-complete
+      approvers: [researcher]
+      criteria:
+        - Question has been investigated to the extent of the time box
+        - Findings are documented with evidence
+        - OR time box has expired (forced exit)
+
+  - id: findings
+    name: Findings
+    description: Document findings and make a recommendation
+    entry_criteria:
+      - investigation-complete gate passed
+    artifacts:
+      - name: findings-report
+        required: true
+        fields:
+          - name: answer
+            required: true
+            description: >
+              Direct answer to the spike question.
+              "Yes, because..." / "No, because..." / "It depends on..."
+          - name: evidence
+            required: true
+            description: "Data, benchmarks, prototypes, or references that support the answer"
+          - name: recommendation
+            required: true
+            description: >
+              Concrete recommendation for how to proceed.
+              Example: "Use Qdrant with HNSW indexing and cosine distance.
+              Configure ef=128 for query time. Expected p95 latency: 45ms."
+          - name: risks
+            required: false
+            description: "Risks or caveats associated with the recommendation"
+          - name: alternatives_evaluated
+            required: true
+            description: "Other approaches that were considered and why they were rejected"
+          - name: follow_up_items
+            required: false
+            description: "Questions raised during investigation that need separate spikes"
+          - name: adr
+            required: false
+            description: >
+              If the findings result in an architectural decision,
+              create an ADR using templates/adr-template.md
+    exit_gate:
+      name: findings-review
+      approvers: [spike-owner, tech-lead]
+      criteria:
+        - Answer directly addresses the original question
+        - Evidence supports the answer
+        - Recommendation is actionable
+        - ADR created if this is an architectural decision
+
+  - id: closed
+    name: Closed
+    description: Spike is complete, findings have been reviewed and accepted
+    entry_criteria:
+      - findings-review gate passed
+    artifacts: []
+
+transitions:
+  - from: definition
+    to: investigation
+    trigger: definition-review gate passed
+  - from: investigation
+    to: findings
+    trigger: investigation-complete gate passed
+  - from: investigation
+    to: findings
+    trigger: time-box-expired (forced transition)
+    description: >
+      If the time box expires, the researcher must still produce findings,
+      even if the answer is "inconclusive -- need more time" with a recommendation
+      for a follow-up spike.
+  - from: findings
+    to: closed
+    trigger: findings-review gate passed
+  - from: findings
+    to: investigation
+    trigger: findings-review gate failed
+    description: >
+      Findings are insufficient. Return to investigation with additional time box
+      (must be explicitly approved by spike-owner).
+  - from: any
+    to: closed
+    trigger: manual (spike-owner)
+    description: >
+      Cancel the spike. Document why it was cancelled and any partial findings.
+
+time_box_guidelines:
+  small:
+    duration: 2-4 hours
+    examples:
+      - "Can library X do Y?"
+      - "What's the API signature for Z?"
+      - "Quick benchmark of A vs B"
+  medium:
+    duration: 1-2 days
+    examples:
+      - "Prototype the data ingestion pipeline for one XML file"
+      - "Evaluate 3 embedding models on a sample dataset"
+      - "Test RLS performance with 10 tenants"
+  large:
+    duration: 3-5 days
+    examples:
+      - "End-to-end RAG pipeline proof of concept"
+      - "Evaluate and recommend a cross-encoder model"
+      - "HL7 FHIR compliance validation framework"

@@ -1,0 +1,196 @@
+# Bugfix Workflow
+# Defines the lifecycle stages for triaging, fixing, and validating bugs.
+
+name: bugfix-workflow
+version: "1.0"
+description: >
+  Streamlined workflow for reporting, triaging, fixing, and validating bugs.
+  Optimized for speed while maintaining quality gates.
+
+roles:
+  - name: reporter
+    description: Reports the bug with reproduction steps
+    permissions: [create, comment]
+  - name: triager
+    description: Assesses severity and assigns the bug
+    permissions: [update-severity, assign, prioritize]
+  - name: fixer
+    description: Implements the fix
+    permissions: [update, submit-for-review]
+  - name: reviewer
+    description: Reviews the fix and validates it resolves the issue
+    permissions: [review, approve, reject]
+
+severity_levels:
+  - id: critical
+    name: Critical
+    description: System is down, data loss, or security vulnerability
+    sla_response: 1 hour
+    sla_resolution: 4 hours
+  - id: major
+    name: Major
+    description: Core functionality broken, no workaround available
+    sla_response: 4 hours
+    sla_resolution: 24 hours
+  - id: minor
+    name: Minor
+    description: Non-critical functionality affected, workaround available
+    sla_response: 24 hours
+    sla_resolution: 1 week
+  - id: trivial
+    name: Trivial
+    description: Cosmetic issue, typo, or minor inconvenience
+    sla_response: 1 week
+    sla_resolution: next sprint
+
+stages:
+  - id: reported
+    name: Reported
+    description: Bug has been reported with reproduction steps
+    entry_criteria: []
+    artifacts:
+      - name: bug-report
+        required: true
+        fields:
+          - name: title
+            required: true
+            description: Clear, concise description of the bug
+          - name: severity
+            required: true
+            description: "Critical | Major | Minor | Trivial"
+          - name: affected_feature
+            required: true
+            description: "FEAT-NNN identifier of the affected feature"
+          - name: environment
+            required: true
+            description: "Environment where bug was observed (dev, staging, production)"
+          - name: steps_to_reproduce
+            required: true
+            description: "Numbered steps to reproduce the bug"
+          - name: expected_behavior
+            required: true
+            description: "What should happen"
+          - name: actual_behavior
+            required: true
+            description: "What actually happens"
+          - name: screenshots
+            required: false
+            description: "Screenshots or logs if applicable"
+    exit_gate:
+      name: triage
+      approvers: [triager]
+      criteria:
+        - Severity confirmed or adjusted
+        - Bug is reproducible
+        - Not a duplicate of existing bug
+        - Assigned to a fixer
+
+  - id: triaged
+    name: Triaged
+    description: Bug has been assessed, prioritized, and assigned
+    entry_criteria:
+      - triage gate passed
+    artifacts:
+      - name: triage-notes
+        required: true
+        fields:
+          - name: confirmed_severity
+            description: Severity after triage assessment
+          - name: root_cause_hypothesis
+            description: Initial hypothesis about what's causing the bug
+          - name: affected_components
+            description: List of code areas likely involved
+          - name: assignee
+            description: Person or agent assigned to fix
+    exit_gate:
+      name: fix-started
+      approvers: [fixer]
+      criteria:
+        - Fixer has acknowledged the assignment
+        - Root cause investigation has begun
+
+  - id: in-progress
+    name: In Progress
+    description: Fix is being developed
+    entry_criteria:
+      - fix-started gate passed
+    artifacts:
+      - name: fix-implementation
+        required: true
+        description: Code changes that resolve the bug
+      - name: regression-test
+        required: true
+        description: Test that reproduces the bug and verifies the fix
+    activities:
+      - name: root-cause-analysis
+        responsible: fixer
+        description: Identify and document the root cause
+      - name: fix-development
+        responsible: fixer
+        description: Implement the fix with minimal blast radius
+      - name: add-regression-test
+        responsible: fixer
+        description: Add a test that fails without the fix and passes with it
+    exit_gate:
+      name: fix-review
+      approvers: [reviewer]
+      criteria:
+        - Root cause identified and documented
+        - Fix addresses root cause (not just symptoms)
+        - Regression test added and passing
+        - No other tests broken
+        - Fix has minimal blast radius (does not introduce new risks)
+
+  - id: in-review
+    name: In Review
+    description: Fix is being reviewed and validated
+    entry_criteria:
+      - fix-review gate passed
+    artifacts:
+      - name: review-notes
+        required: true
+        description: Review feedback and validation results
+    activities:
+      - name: code-review
+        responsible: reviewer
+        description: Review the code changes for correctness and quality
+      - name: reproduction-test
+        responsible: reviewer
+        description: Verify the bug no longer reproduces using original steps
+    exit_gate:
+      name: fix-accepted
+      approvers: [reviewer]
+      criteria:
+        - Bug no longer reproduces
+        - Regression test passes
+        - No new issues introduced
+        - Code quality acceptable
+
+  - id: resolved
+    name: Resolved
+    description: Bug fix has been accepted and merged
+    entry_criteria:
+      - fix-accepted gate passed
+    artifacts: []
+
+transitions:
+  - from: reported
+    to: triaged
+    trigger: triage gate passed
+  - from: reported
+    to: resolved
+    trigger: manual (triager)
+    description: Close as not-a-bug, duplicate, or won't-fix with documented rationale
+  - from: triaged
+    to: in-progress
+    trigger: fix-started gate passed
+  - from: in-progress
+    to: in-review
+    trigger: fix-review gate passed
+  - from: in-review
+    to: resolved
+    trigger: fix-accepted gate passed
+  - from: in-review
+    to: in-progress
+    trigger: fix-rejected (reviewer found issues)
+    description: Return to in-progress with review feedback
